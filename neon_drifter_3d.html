@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Drifter 3D</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050510;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none; /* Prevents mobile scrolling while swiping */
+            user-select: none;
+        }
+        canvas {
+            display: block;
+        }
+        .neon-text {
+            text-shadow: 0 0 10px #0ff, 0 0 20px #0ff, 0 0 40px #0ff;
+        }
+        .neon-text-red {
+            text-shadow: 0 0 10px #f0f, 0 0 20px #f0f, 0 0 40px #f0f;
+        }
+        
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Let clicks pass through to canvas if needed */
+        }
+        
+        .pointer-events-auto {
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 3D Canvas will be injected here -->
+    <div id="canvas-container"></div>
+
+    <!-- UI Overlay -->
+    <div id="ui-layer" class="flex flex-col justify-between p-4 md:p-8">
+        <!-- Top HUD -->
+        <div class="flex justify-between items-start">
+            <div class="text-white text-2xl md:text-4xl font-bold italic neon-text">
+                SCORE: <span id="score-display">0</span>
+            </div>
+            <div class="text-pink-400 text-xl md:text-2xl font-bold">
+                SPEED: <span id="speed-display">1.0</span>x
+            </div>
+        </div>
+
+        <!-- Start / Game Over Screens -->
+        <div id="menu-screen" class="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-70 pointer-events-auto backdrop-blur-sm transition-opacity duration-300">
+            <h1 class="text-5xl md:text-7xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-pink-500 mb-2 text-center" style="filter: drop-shadow(0 0 10px rgba(0,255,255,0.8));">
+                NEON DRIFTER
+            </h1>
+            <p id="game-over-text" class="text-2xl md:text-3xl font-bold text-red-500 neon-text-red mb-8 hidden">SYSTEM CRASH</p>
+            
+            <div class="bg-gray-900 bg-opacity-80 p-6 rounded-2xl border border-cyan-500 shadow-[0_0_15px_rgba(0,255,255,0.5)] max-w-md text-center mb-8">
+                <h3 class="text-cyan-300 font-bold mb-4 text-xl">CONTROLS</h3>
+                <div class="grid grid-cols-2 gap-4 text-gray-300 text-sm md:text-base">
+                    <div class="bg-black bg-opacity-50 p-2 rounded">
+                        <span class="block font-bold text-white mb-1">DESKTOP</span>
+                        Left / Right Arrows<br>
+                        Up Arrow to Jump
+                    </div>
+                    <div class="bg-black bg-opacity-50 p-2 rounded">
+                        <span class="block font-bold text-white mb-1">MOBILE</span>
+                        Swipe Left / Right<br>
+                        Swipe Up to Jump
+                    </div>
+                </div>
+            </div>
+
+            <button id="start-btn" class="px-8 py-4 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-full text-white font-bold text-xl md:text-2xl shadow-[0_0_20px_rgba(0,255,255,0.6)] hover:scale-105 hover:shadow-[0_0_30px_rgba(0,255,255,0.8)] transition-all active:scale-95">
+                INITIALIZE RUN
+            </button>
+        </div>
+    </div>
+
+<script>
+    // --- THREE.JS SETUP ---
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    
+    // Cyberpunk Fog
+    scene.fog = new THREE.FogExp2(0x0a0a1a, 0.015);
+    scene.background = new THREE.Color(0x050510);
+
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 200);
+    // Camera is placed behind and slightly above the player
+    camera.position.set(0, 5, 10); 
+    camera.lookAt(0, 0, -10);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Optimize for high DPI
+    container.appendChild(renderer.domElement);
+
+    // --- LIGHTING ---
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+    scene.add(ambientLight);
+
+    const dirLight = new THREE.DirectionalLight(0xff00ff, 0.8);
+    dirLight.position.set(10, 20, 10);
+    scene.add(dirLight);
+
+    const blueLight = new THREE.PointLight(0x00ffff, 1, 50);
+    blueLight.position.set(0, 2, 5);
+    scene.add(blueLight);
+
+    // --- GAME OBJECTS ---
+    
+    // 1. The Grid (Moving Floor illusion)
+    const gridHelper = new THREE.GridHelper(200, 100, 0xff00ff, 0x003366);
+    gridHelper.position.y = -1;
+    scene.add(gridHelper);
+
+    // 2. The Player (Light Ship)
+    const playerGroup = new THREE.Group();
+    
+    // Ship Body
+    const shipGeo = new THREE.ConeGeometry(0.8, 2.5, 4);
+    shipGeo.rotateX(-Math.PI / 2); // Point forward
+    const shipMat = new THREE.MeshStandardMaterial({ 
+        color: 0x222222, 
+        emissive: 0x00ffff,
+        emissiveIntensity: 0.5,
+        roughness: 0.1,
+        metalness: 0.8
+    });
+    const playerMesh = new THREE.Mesh(shipGeo, shipMat);
+    playerGroup.add(playerMesh);
+
+    // Ship Engine Glow
+    const engineGlowGeo = new THREE.SphereGeometry(0.4, 8, 8);
+    const engineGlowMat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
+    const engineGlow = new THREE.Mesh(engineGlowGeo, engineGlowMat);
+    engineGlow.position.z = 1;
+    playerGroup.add(engineGlow);
+
+    scene.add(playerGroup);
+
+    // --- GAME STATE & MECHANICS ---
+    let gameState = 'start'; // start, playing, gameover
+    let score = 0;
+    let baseSpeed = 0.5; // Z-axis movement speed per frame
+    let speedMultiplier = 1.0;
+    
+    // Lane System (-1: Left, 0: Center, 1: Right)
+    let currentLane = 0;
+    const laneWidth = 3.5;
+    let targetX = 0; // Where the ship is moving towards horizontally
+
+    // Jumping System
+    let isJumping = false;
+    let jumpVelocity = 0;
+    const jumpPower = 0.4;
+    const gravity = 0.025;
+    
+    // Arrays to hold generated world objects
+    let obstacles = [];
+    let coins = [];
+
+    // Materials for reuse
+    const obstacleMat = new THREE.MeshStandardMaterial({ 
+        color: 0x222222, 
+        emissive: 0xff0055, 
+        emissiveIntensity: 0.8 
+    });
+    const coinMat = new THREE.MeshStandardMaterial({
+        color: 0xffdd00,
+        emissive: 0xffaa00,
+        emissiveIntensity: 0.8,
+        wireframe: true
+    });
+
+    // UI Elements
+    const uiScore = document.getElementById('score-display');
+    const uiSpeed = document.getElementById('speed-display');
+    const menuScreen = document.getElementById('menu-screen');
+    const gameOverText = document.getElementById('game-over-text');
+    const startBtn = document.getElementById('start-btn');
+
+    // --- FUNCTIONS ---
+
+    function spawnObstacle() {
+        // Decide obstacle type: 0 = Tall (Must dodge), 1 = Low (Can jump over)
+        const type = Math.random() > 0.4 ? 'tall' : 'low';
+        // Random lane: -1, 0, or 1
+        const lane = Math.floor(Math.random() * 3) - 1;
+        
+        let geo;
+        if (type === 'tall') {
+            geo = new THREE.BoxGeometry(2.5, 4, 1);
+        } else {
+            geo = new THREE.BoxGeometry(3, 1.5, 1);
+        }
+
+        const mesh = new THREE.Mesh(geo, obstacleMat);
+        
+        // Spawn far in the distance
+        mesh.position.set(lane * laneWidth, type === 'tall' ? 1 : -0.25, -120);
+        
+        scene.add(mesh);
+        obstacles.push({ mesh: mesh, type: type, lane: lane });
+    }
+
+    function spawnCoin() {
+        const lane = Math.floor(Math.random() * 3) - 1;
+        // Don't spawn coin perfectly overlapping an obstacle (rough check)
+        
+        const geo = new THREE.OctahedronGeometry(0.6);
+        const mesh = new THREE.Mesh(geo, coinMat);
+        
+        // Float slightly above ground, or higher if over a low obstacle
+        mesh.position.set(lane * laneWidth, 0.5, -120);
+        
+        scene.add(mesh);
+        coins.push({ mesh: mesh });
+    }
+
+    function resetGame() {
+        // Clear old objects
+        obstacles.forEach(obs => scene.remove(obs.mesh));
+        coins.forEach(coin => scene.remove(coin.mesh));
+        obstacles = [];
+        coins = [];
+
+        // Reset stats
+        score = 0;
+        speedMultiplier = 1.0;
+        currentLane = 0;
+        targetX = 0;
+        playerGroup.position.set(0, 0, 0);
+        playerGroup.rotation.z = 0;
+        isJumping = false;
+        
+        uiScore.innerText = "0";
+        uiSpeed.innerText = "1.0";
+        
+        // Pre-spawn some initial obstacles
+        for(let i=0; i<3; i++) {
+            setTimeout(spawnObstacle, i * 800);
+        }
+    }
+
+    function startGame() {
+        gameState = 'playing';
+        menuScreen.classList.add('hidden');
+        resetGame();
+    }
+
+    function gameOver() {
+        gameState = 'gameover';
+        menuScreen.classList.remove('hidden');
+        gameOverText.classList.remove('hidden');
+        startBtn.innerText = "REBOOT SYSTEM";
+        
+        // Explosion effect (simple screen flash via light)
+        dirLight.color.setHex(0xff0000);
+        setTimeout(() => dirLight.color.setHex(0xff00ff), 200);
+    }
+
+    // --- CONTROLS ---
+
+    function moveLeft() {
+        if (currentLane > -1 && gameState === 'playing') {
+            currentLane--;
+            targetX = currentLane * laneWidth;
+        }
+    }
+
+    function moveRight() {
+        if (currentLane < 1 && gameState === 'playing') {
+            currentLane++;
+            targetX = currentLane * laneWidth;
+        }
+    }
+
+    function jump() {
+        if (!isJumping && gameState === 'playing') {
+            isJumping = true;
+            jumpVelocity = jumpPower;
+        }
+    }
+
+    // Keyboard controls
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowLeft' || e.key === 'a') moveLeft();
+        if (e.key === 'ArrowRight' || e.key === 'd') moveRight();
+        if (e.key === 'ArrowUp' || e.key === 'w' || e.key === ' ') jump();
+    });
+
+    // Touch controls (Swiping)
+    let touchStartX = 0;
+    let touchStartY = 0;
+    
+    document.addEventListener('touchstart', e => {
+        touchStartX = e.changedTouches[0].screenX;
+        touchStartY = e.changedTouches[0].screenY;
+    }, {passive: false});
+
+    document.addEventListener('touchend', e => {
+        if (gameState !== 'playing') return;
+        
+        let touchEndX = e.changedTouches[0].screenX;
+        let touchEndY = e.changedTouches[0].screenY;
+        
+        let deltaX = touchEndX - touchStartX;
+        let deltaY = touchEndY - touchStartY;
+        
+        // Threshold for a swipe
+        if (Math.abs(deltaX) > 40 || Math.abs(deltaY) > 40) {
+            if (Math.abs(deltaX) > Math.abs(deltaY)) {
+                // Horizontal swipe
+                if (deltaX > 0) moveRight();
+                else moveLeft();
+            } else {
+                // Vertical swipe
+                if (deltaY < 0) jump(); // Swipe up to jump
+            }
+        }
+    }, {passive: false});
+
+    // Prevent default touch behavior on canvas container to stop scrolling
+    container.addEventListener('touchmove', (e) => e.preventDefault(), {passive: false});
+
+    startBtn.addEventListener('click', startGame);
+
+    // --- MAIN GAME LOOP ---
+    
+    let frameCount = 0;
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        if (gameState === 'playing') {
+            frameCount++;
+            
+            // 1. Difficulty progression
+            score += Math.floor(speedMultiplier);
+            if (frameCount % 10 === 0) {
+                uiScore.innerText = score;
+            }
+            
+            // Increase speed slowly
+            speedMultiplier += 0.0005;
+            if (frameCount % 60 === 0) {
+                uiSpeed.innerText = speedMultiplier.toFixed(1);
+            }
+
+            let currentSpeed = baseSpeed * speedMultiplier;
+
+            // 2. Move Player (Interpolate for smoothness)
+            // Lerp X position for lane switching
+            playerGroup.position.x += (targetX - playerGroup.position.x) * 0.2;
+            
+            // Banking rotation effect when changing lanes
+            const targetRotation = (targetX - playerGroup.position.x) * -0.15;
+            playerGroup.rotation.z += (targetRotation - playerGroup.rotation.z) * 0.2;
+
+            // Handle Jumping physics
+            if (isJumping) {
+                playerGroup.position.y += jumpVelocity;
+                jumpVelocity -= gravity;
+                
+                // Landing
+                if (playerGroup.position.y <= 0) {
+                    playerGroup.position.y = 0;
+                    isJumping = false;
+                }
+            }
+
+            // 3. Move Grid to simulate forward movement
+            gridHelper.position.z += currentSpeed;
+            if (gridHelper.position.z > 10) {
+                gridHelper.position.z -= 10; // Reset seamless loop
+            }
+
+            // 4. World Generation (Spawning)
+            // Adjust spawn rate based on speed
+            const spawnRate = Math.max(30, 60 - Math.floor(speedMultiplier * 10));
+            if (frameCount % spawnRate === 0) {
+                spawnObstacle();
+            }
+            if (frameCount % (spawnRate * 1.5) === 0) {
+                spawnCoin();
+            }
+
+            // 5. Update Obstacles & Collision
+            const hitRadius = 1.2;
+
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                obs.mesh.position.z += currentSpeed;
+
+                // Collision Detection (AABB / distance hybrid)
+                // Only check if they are close on Z axis
+                if (obs.mesh.position.z > -2 && obs.mesh.position.z < 2) {
+                    // Check X (Lane)
+                    if (Math.abs(obs.mesh.position.x - playerGroup.position.x) < 1.5) {
+                        // Check Y (Height / Jump)
+                        if (obs.type === 'tall') {
+                            // Tall blocks hit you no matter what
+                            gameOver();
+                        } else if (obs.type === 'low') {
+                            // Low blocks hit you if you aren't high enough
+                            if (playerGroup.position.y < 1.2) {
+                                gameOver();
+                            }
+                        }
+                    }
+                }
+
+                // Cleanup passed obstacles
+                if (obs.mesh.position.z > 10) {
+                    scene.remove(obs.mesh);
+                    obstacles.splice(i, 1);
+                }
+            }
+
+            // 6. Update Coins & Collection
+            for (let i = coins.length - 1; i >= 0; i--) {
+                const coin = coins[i];
+                coin.mesh.position.z += currentSpeed;
+                coin.mesh.rotation.y += 0.05;
+                coin.mesh.rotation.x += 0.02;
+
+                // Collection Check
+                if (coin.mesh.position.z > -2 && coin.mesh.position.z < 2) {
+                    if (Math.abs(coin.mesh.position.x - playerGroup.position.x) < 1.5) {
+                        if (Math.abs(coin.mesh.position.y - playerGroup.position.y) < 2) {
+                            // Collected!
+                            score += 500;
+                            uiScore.innerText = score;
+                            scene.remove(coin.mesh);
+                            coins.splice(i, 1);
+                            
+                            // Screen flash effect
+                            blueLight.intensity = 5;
+                            setTimeout(() => { blueLight.intensity = 1; }, 100);
+                            continue;
+                        }
+                    }
+                }
+
+                // Cleanup passed coins
+                if (coin.mesh.position.z > 10) {
+                    scene.remove(coin.mesh);
+                    coins.splice(i, 1);
+                }
+            }
+        }
+
+        // Engine flicker effect
+        if (Math.random() > 0.8) {
+            engineGlowMat.color.setHex(0x00ffff);
+        } else {
+            engineGlowMat.color.setHex(0x0088ff);
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    // Handle Window Resize
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Start rendering loop immediately (background animation)
+    animate();
+
+</script>
+</body>
+</html>
